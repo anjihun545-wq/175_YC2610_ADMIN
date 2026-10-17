@@ -57,3 +57,21 @@ export function csvDownload(name, headers, rows) {
   const blob=new Blob([str],{type:'text/csv;charset=utf-8;'});
   const link=document.createElement('a'); link.href=URL.createObjectURL(blob);link.download=name;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(link.href),1500);
 }
+
+// 경기 명단을 입력받지 않습니다. 항상 동일한 고정 번호 200개 / 50팀을 클라이언트에서 생성합니다.
+// Firebase에는 실제 경기기록만 저장하므로 사용자별 대량 명단 업로드가 필요 없습니다.
+export const INDIVIDUAL_COUNT=200;
+export const TEAM_COUNT=50;
+export const padBib=(n,type)=>String(n).padStart(type==='individual'?3:2,'0');
+export function presetData(data){
+  const result={...emptyData(),...data};
+  result.participants=Object.fromEntries(Array.from({length:INDIVIDUAL_COUNT},(_,i)=>{
+    const bib=padBib(i+1,'individual'),id=`p_${bib}`;
+    return [id,{id,bib,name:`${bib}번 참가자`,division:'전체',affiliation:''}];
+  }));
+  result.teams=Object.fromEntries(Array.from({length:TEAM_COUNT},(_,i)=>{
+    const bib=padBib(i+1,'relay'),id=`t_${bib}`;
+    return [id,{id,bib,teamName:`${bib}팀`,members:['1주자','2주자','3주자','4주자'],affiliation:''}];
+  }));
+  return result;
+}
