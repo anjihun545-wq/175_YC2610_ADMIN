@@ -1,71 +1,71 @@
-# Firebase 설정 가이드 v1.3 — 계정 로그인 없이 자동 접속
+# v1.4 Apps Script 실시간(주기적) 공유 설정 — 초등학생도 이해할 수 있는 순서
 
-## 확인된 프로젝트 정보
+## 준비물
 
-- Firebase 프로젝트: `YC2026-TIMER`
-- Project ID: `yc2026-timer`
-- Realtime Database URL: `https://yc2026-timer-default-rtdb.asia-southeast1.firebasedatabase.app`
-- GitHub 저장소: `https://github.com/anjihun545-wq/175_YC2610_ADMIN`
-- 예상 GitHub Pages 주소(활성화 후): `https://anjihun545-wq.github.io/175_YC2610_ADMIN/`
+- Google 계정 하나
+- GitHub Pages에 이미 올려둔 2026 연천피지컬 서바이벌 프로그램
+- 압축파일의 `apps-script/Code.gs` 파일
 
-## 1. Authentication 익명 인증 켜기
+## 순서 1. Google Sheets 기록장 만들기
 
-Firebase 콘솔 → **빌드 / 보안 → Authentication → 시작하기 → 로그인 방법** → **익명(Anonymous)** 을 **사용 설정**하고 저장합니다.
+1. `https://sheets.new` 접속
+2. 문서 이름을 `2026 연천피지컬 경기 기록장`으로 변경
+3. 상단 **확장 프로그램 → Apps Script**
+4. 코드 편집기에 원래 있는 코드를 전부 지움
+5. 압축파일 `apps-script/Code.gs` 파일 내용을 전체 복사해 붙여넣고 저장
+6. 위쪽 함수 드롭다운에서 **setup** 선택 → **실행(▶)**
+7. 처음 나타나는 Google 권한 요청을 승인
+8. 원래 구글 시트에 `YC_META`, `YC_STATE_A`, `YC_STATE_B`, `YC_RESULTS` 탭이 생겼는지 확인
 
-이 기능은 **사용자에게 이메일·비밀번호 입력을 요구하지 않습니다.** 페이지가 열리면 Firebase SDK가 익명 사용자로 자동 연결합니다. 단, Firebase 보안 규칙에서는 익명 사용자에게 쓰기를 허용하기 때문에 **누구나 조작할 수 있습니다**. 운영자 보호가 필요하면 추후 관리자 인증으로 전환해야 합니다.
+> 이 네 탭 중 `YC_RESULTS`는 읽기 쉬운 개인전 200명 + 단체전 50팀 기록표입니다. 셀을 직접 고치면 안 되고 기록은 홈페이지에서 수정해야 합니다.
 
-## 2. Realtime Database 규칙 적용
+## 순서 2. 인터넷에서 접근할 수 있게 웹 앱 배포
 
-Firebase Console → Realtime Database → **규칙(Rules)** → 프로젝트의 `database.rules.json` 내용 전체를 붙여넣고 **게시(Publish)**.
+1. Apps Script 오른쪽 위 **배포 → 새 배포**
+2. 톱니바퀴 아이콘에서 **웹 앱** 선택
+3. **실행 사용자: 나** / **액세스 권한: 모든 사용자** 선택
+4. **배포** 클릭
+5. `https://script.google.com/macros/s/…/exec` 형태 주소 복사
+6. 주소 뒤에 `?action=ping`을 붙여 열어봄
+7. `"ok":true`가 표시되면 서버가 열렸다는 뜻
 
-```
-{
-  "rules": {
-    ".read": false,
-    ".write": false,
-    "events": {
-      "$eventId": {
-        ".read": "auth != null && auth.provider === 'anonymous' && $eventId === 'yeoncheon-physical-2026'",
-        ".write": "auth != null && auth.provider === 'anonymous' && $eventId === 'yeoncheon-physical-2026'"
-      }
-    }
-  }
-}
-```
+> 수정 후에는 **배포 → 배포 관리 → 수정 → 새 버전** 으로 갱신해야 실제 `/exec`에 반영될 수 있습니다. 테스트 `/dev` 링크는 쓰지 마세요.
 
-이 규칙은 단순한 비로그인 편의용이며, **기록 변조 방지용 관리권한 규칙이 아닙니다.** 다른 Firebase 데이터 경로는 기본적으로 막습니다. Realtime Database의 `Data` 탭의 초기 `null` 상태는 정상입니다.
+## 순서 3. GitHub 홈페이지에 연결 주소 넣기
 
-## 3. Firebase 웹 앱 등록
-
-프로젝트 설정 → 일반 → 내 앱 → 웹 앱(`</>`) → 앱 별명 `YC2026-WEB` → 앱 등록.
-Firebase Hosting 별도 활성화는 불필요합니다.
-Firebase 콘솔에 표시되는 SDK `firebaseConfig`에서 **apiKey**, **appId**를 복사해 `js/firebase-config.js`의 빈 값에 입력합니다. `authDomain`, `projectId`, `databaseURL`은 이미 확인된 값을 미리 입력했습니다. Firebase 콘솔의 값과 대조하고 차이가 있으면 콘솔값을 우선하세요.
+1. GitHub 저장소 `175_YC2610_ADMIN`에서 `js/apps-script-config.js` 선택
+2. 오른쪽 위 연필 클릭
+3. `export const APPS_SCRIPT_URL = "";`를 다음처럼 변경
 
 ```js
-export const firebaseConfig = {
-  apiKey: "Firebase 콘솔의 실제 apiKey",
-  authDomain: "yc2026-timer.firebaseapp.com",
-  databaseURL: "https://yc2026-timer-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "yc2026-timer",
-  appId: "Firebase 콘솔의 실제 appId"
-};
-export const EVENT_ID = "yeoncheon-physical-2026";
+export const APPS_SCRIPT_URL = "여기에 /exec 주소 전체";
 ```
 
-**클라이언트 `apiKey`는 서비스 계정 비밀키와 다릅니다.** 관리용 JSON 서비스계정 키는 GitHub에 절대 업로드하지 마세요.
+4. **Commit changes** 클릭
+5. GitHub Pages가 새로 배포되면 홈페이지 다시 새로고침
 
-## 4. GitHub 업데이트
+※ v1.4 파일 전체를 먼저 GitHub에 반영해야 합니다. 기존 Firebase 버전 코드에서는 Apps Script URL만 넣어도 동작하지 않습니다.
 
-GitHub Pages 웹앱 파일을 `main` 브랜치 최상위에 업로드한 뒤 `js/firebase-config.js`까지 변경해 커밋하세요. 동일 이름을 가진 기존 파일은 교체해야 합니다. 사용 중인 기록이 있다면 업데이트 전 CSV·JSON 백업을 받으세요. **Firebase 데이터베이스는 별도 삭제하거나 import 하지 마세요.**
+## 순서 4. 서로 다른 기기에서 확인
 
-## 5. 실시간 검증
+1. 노트북에서 홈페이지 열기
+2. **계측 제어권 획득** 클릭
+3. 개인전 **001번** 시작 → 종료
+4. 서버 미전송 0건인지 확인
+5. 휴대폰에서 `홈페이지주소?view=mc` 열기
+6. 001번 기록이 나타나면 성공
+7. 테스트가 끝나면 **운영·백업 → 기록 초기화 관리**에서 JSON 백업 후 테스트 기록 삭제
 
-1. **운영 노트북**에서 앱을 열고 `서버 동기화 정상` 상태 확인 후 `계측 제어권 획득`.
-2. **MC 휴대전화**로 같은 주소에 `?view=mc`를 붙여 열어 기록 대기 확인.
-3. 운영 노트북에서 개인전 `001번` 시작·종료, 종료 기록이 서버 저장됐는지 확인.
-4. MC 화면에 `001번`, 기록, 잠정 순위가 반영되는지 확인.
-5. 단체전 `01팀`도 동일하게 시험.
-6. 운영·백업에서 전체 JSON 백업 → 개인전만 초기화 → 단체전 기록이 남는지 확인. 이후 전체 초기화 시험.
-7. 인터넷 일시 중단 뒤 경기 종료 → 재연결 후 전송 대기열이 줄어드는지 확인. 리허설 후 백업 파일 저장.
+## 문제별 해결
 
-**주의:** 실시간 반영 지연, Firebase 규칙의 실제 적용, 휴대전화 Safari/Chrome, 250회 연속 현장 계측은 실제 연결 후 검증해야 합니다. 모의 시험 결과만으로 실전 안전을 보장하지 않습니다.
+| 증상 | 확인할 부분 |
+|---|---|
+| 서버 미연결 / 이 기기 저장 중 | `APPS_SCRIPT_URL`에 올바른 `/exec` 주소 입력했는지 확인 |
+| Apps Script 읽기 실패 | 배포된 웹 앱 권한이 **모든 사용자**인지, 로그인 페이지로 이동하는지 확인 |
+| 계측 제어권 획득 실패 | 다른 계측 기기가 사용 중인지, Apps Script 요청 응답이 45초 안에 도착하는지 확인 |
+| 서버 미전송 건수 증가 | Apps Script 웹 앱 실행 기록에서 실패 확인, 인터넷 확인, 서버 복구 후 재시도 |
+| MC 화면 지연 | 5초 폴링 + Apps Script 처리 지연이 있어 수초 이상 걸릴 수 있음 |
+| 앱 변경이 적용 안 됨 | GitHub Pages 배포 및 강력 새로고침(Ctrl+Shift+R) |
+| Apps Script 코드 변경이 적용 안 됨 | 코드 저장뿐 아니라 **새 배포 버전**으로 갱신 필요 |
+
+**보안 주의:** 계정·권한 없이 웹 앱을 공개하면 제3자도 기록을 바꿀 수 있습니다. 정식 대회 운영 전에 접근 제어를 검토하세요.

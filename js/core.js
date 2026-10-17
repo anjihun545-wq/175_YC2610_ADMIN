@@ -59,7 +59,7 @@ export function csvDownload(name, headers, rows) {
 }
 
 // 경기 명단을 입력받지 않습니다. 항상 동일한 고정 번호 200개 / 50팀을 클라이언트에서 생성합니다.
-// Firebase에는 실제 경기기록만 저장하므로 사용자별 대량 명단 업로드가 필요 없습니다.
+// Apps Script에는 실제 경기기록만 저장하므로 사용자별 대량 명단 업로드가 필요 없습니다.
 export const INDIVIDUAL_COUNT=200;
 export const TEAM_COUNT=50;
 export const padBib=(n,type)=>String(n).padStart(type==='individual'?3:2,'0');

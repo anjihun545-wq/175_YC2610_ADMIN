@@ -1,4 +1,4 @@
-import {firebaseConfig, EVENT_ID} from './firebase-config.js';
+import {APPS_SCRIPT_URL, EVENT_ID} from './apps-script-config.js';
 import {loadLocal,saveSnapshot,persistChange,removeOutbox,clearAll,clearOutbox} from './storage.js';
 import {emptyData,uid,safe,msText,tsText,applyPatches,deepCopy,sortByBib,latestRuns,rankings,statusLabel,csvDownload,presetData,INDIVIDUAL_COUNT,TEAM_COUNT,padBib} from './core.js';
 import {isConfigured,createCloud} from './cloud.js';
@@ -44,7 +44,7 @@ function connectionName(){
   if(!state.connected)return ['서버 연결 끊김','bad'];
   if(!state.cloudLoaded)return ['서버 기록 동기화 중','warn'];
   if(state.outbox.length)return [`미전송 ${state.outbox.length}건`,'warn'];
-  return ['서버 동기화 정상','ok'];
+  return ['서버 저장 확인 정상','ok'];
 }
 function chooseDefault(){
   if(!targets().some(x=>x.id===state.selectedId)){
@@ -74,7 +74,7 @@ async function flush(){
       const task=state.outbox[0];
       try{
         if(task.generation!==Number(state.data.meta?.generation||0)) throw Error('초기화 전 미전송 기록이 있습니다. 자동 재전송을 중단했습니다. 운영본부에서 백업 후 확인하세요.');
-        await state.cloud.send(task.patches,task.generation); // Firebase 서버 ACK 후에만 대기열에서 삭제
+        await state.cloud.send(task.patches,task.generation,task.id,state.deviceId); // 서버 기록에서 요청 ID ACK 확인 후에만 대기열 삭제
         await removeOutbox(task.id);
         state.outbox.shift();
         renderHeader();
@@ -115,15 +115,15 @@ async function boot(){
       onData:eventDataUpdate,
       onConnected:connected=>{const changed=connected!==state.connected;state.connected=connected;if(changed)render();else renderHeader();if(connected)void flush();},
       onServerOffset:offset=>state.offset=offset,
-      onError:error=>{state.error=`Firebase 오류: ${formatError(error)}`;notice(state.error,'error');renderHeader();}
+      onError:error=>{state.error=`Apps Script 오류: ${formatError(error)}`;renderHeader();}
     });
-  }catch(e){state.error=`Firebase 초기화 오류: ${formatError(e)}`;render();}
+  }catch(e){state.error=`Apps Script 연결 오류: ${formatError(e)}`;render();}
 }
 function header(){
   const [name,color]=connectionName();
   return `<header class="topbar"><div class="brand"><div class="brand-icon">Y26</div><div><div class="brand-kicker">YEONCHEON PHYSICAL SURVIVAL</div><h1>2026 연천피지컬 서바이벌</h1></div></div>
   <div class="header-right"><span id="connection-pill" class="status-pill ${color}">${safe(name)}</span>
-  <span class="status-pill">${state.readOnly?'MC 조회 전용':state.mode==='local'?'단독 계측':'공유 계측'}</span>
+  <span class="status-pill">${state.readOnly?'MC 조회 전용':state.mode==='local'?'단독 계측':'공용 계측'}</span>
 </div></header>`;
 }
 function renderHeader(){
@@ -132,7 +132,7 @@ function renderHeader(){
   const queue=document.querySelector('#queue-count');if(queue)queue.textContent=String(state.outbox.length);
 }
 function nav(){
-  const all=isViewer()?[['mc','MC 실시간 화면'],['rank','기록·순위']]:[
+  const all=isViewer()?[['mc','MC 기록 화면'],['rank','기록·순위']]:[
     ['timer','경기 계측'],['slots','번호별 현황'],['dashboard','운영 현황'],['rank','기록·순위'],['mc','MC 화면'],['settings','운영·백업']
   ];
   return `<nav class="nav">${all.map(([id,txt])=>`<button data-tab="${id}" class="${state.tab===id?'active':''}">${txt}</button>`).join('')}</nav>`;
@@ -142,7 +142,7 @@ function subhead(over,title,detail='',right=''){
 }
 function localStatusNotice(){
   if(!state.storageReady)return `<div class="banner red"><strong>기기 저장소 사용 불가 · 계측 중단</strong> 이 브라우저에서는 경기기록을 안전하게 저장할 수 없습니다. 저장소 오류를 해결하거나 기기를 변경하세요. ${safe(state.error)}</div>`;
-  return state.mode==='local'?`<div class="banner"><strong>서버 미연결 · 이 기기 저장 중</strong> 기록은 현재 사용 중인 기기에만 보관됩니다. MC·운영본부 실시간 공유는 Firebase 연결 후 사용할 수 있습니다.</div>`:'';
+  return state.mode==='local'?`<div class="banner"><strong>서버 미연결 · 이 기기 저장 중</strong> 기록은 현재 사용 중인 기기에만 보관됩니다. MC·운영본부 기록 공유는 Apps Script 웹 앱 연결 후 사용할 수 있습니다.</div>`:'';
 }
 function controlBox(){
   if(state.mode==='local')return `<div class="info-strip">단독 계측 상태입니다. 이 기기에서 기록을 보관하며 다른 기기에는 공유되지 않습니다.</div>`;
@@ -205,7 +205,7 @@ function dashboard(){
    <div class="timer-face ${r?'running':''}"><div class="overline">${r?safe(modeName(r.type)):'READY'}</div><div class="time" id="live-clock">${msText(r?liveCurrentMs():0)}</div><div class="timer-status">${r?safe(entityName(r)):'다음 경기를 기다리고 있습니다'}</div></div>
    <div class="quick-grid"><button class="quick-card" data-tab="timer">경기 제어<strong>계측 시작 →</strong></button><button class="quick-card" data-tab="slots">고정 번호 현황<strong>001~200 / 01~50 →</strong></button></div>
    <p class="notice-line">개인전 대기 ${pi.waiting}명 · 단체전 대기 ${pt.waiting}팀 · 서버 미전송 ${state.outbox.length}건</p></section>
-  <section class="stack"><div class="panel"><h3>경기 운영 상태</h3><div class="hr"></div><div class="control-card"><span>실시간 서버</span><b>${state.mode==='local'?'미연결 · 기기 저장':state.connected?'연결됨':'연결 안 됨'}</b></div><div class="control-card section-gap"><span>계측 제어권</span><b>${state.control?'이 기기 보유':'미획득'}</b></div><div class="control-card section-gap"><span>전송 대기열</span><b>${state.outbox.length}건</b></div><div class="section-gap">${controlBox()}</div></div>
+  <section class="stack"><div class="panel"><h3>경기 운영 상태</h3><div class="hr"></div><div class="control-card"><span>기록 서버</span><b>${state.mode==='local'?'미연결 · 기기 저장':state.connected?'연결됨':'연결 안 됨'}</b></div><div class="control-card section-gap"><span>계측 제어권</span><b>${state.control?'이 기기 보유':'미획득'}</b></div><div class="control-card section-gap"><span>전송 대기열</span><b>${state.outbox.length}건</b></div><div class="section-gap">${controlBox()}</div></div>
   <div class="panel"><h3>내장 번호 사용법</h3><p class="notice-line">① 개인전 001~200번, 단체전 01~50팀이 기본 준비됩니다.<br/>② 경기 계측에서 종목과 번호 선택 → 시작 → 종료.<br/>③ 저장 후 자동으로 다음 대기 번호를 선택합니다.<br/>④ 별도 선수 등록은 필요하지 않습니다.</p></div></section></div>`;
 }
 function slotsView(){
@@ -246,13 +246,13 @@ function mcView(){
   const stale=r&&current?.heartbeatAt&&Date.now()-current.heartbeatAt>30000;
   const individual=rankings(state.data,'individual').slice(0,10);
   const relay=rankings(state.data,'relay').slice(0,10);
-  return `<div class="mc-header"><div class="overline">OFFICIAL LIVE SCOREBOARD</div><h1>2026 연천피지컬 서바이벌</h1><p class="muted">MC · 운영본부 실시간 기록 조회 · 번호 기준</p></div>
+  return `<div class="mc-header"><div class="overline">OFFICIAL LIVE SCOREBOARD</div><h1>2026 연천피지컬 서바이벌</h1><p class="muted">MC · 운영본부 기록 조회 (약 5초 간격 갱신) · 번호 기준</p></div>
    ${localStatusNotice()}
    ${state.mode!=='local'&&!state.connected?'<div class="banner red">서버 연결이 끊겼습니다. 화면의 기록은 최신 정보가 아닐 수 있습니다.</div>':''}
    <div class="mc-clock"><div class="overline">${r?safe(modeName(r.type)):'NOW READY'}</div><h2>${r?safe(entityName(r)):'다음 경기를 준비합니다'}</h2><div class="time" id="live-clock">${r?msText(Math.max(0,Date.now()+state.offset-r.startedAt)):'00:00.00'}</div>
    <span class="badge ${r?'pending':''}">${r?(stale?'계측기 통신 지연 · 시간 참고용':'현재 경기 진행 중 · 시간 참고용'):'경기 대기'}</span>
    <div class="notice-line">진행 중 시간은 참고용입니다. 공식 기록은 계측 기기의 종료 기록을 기준으로 합니다.</div></div>
-   <div class="mc-grid two section-gap">${[[individual,'개인전 TOP 10'],[relay,'단체전 TOP 10']].map(([rows,name])=>`<section class="panel"><div class="panel-head"><h3>${name}</h3><span class="badge">실시간 반영</span></div>
+   <div class="mc-grid two section-gap">${[[individual,'개인전 TOP 10'],[relay,'단체전 TOP 10']].map(([rows,name])=>`<section class="panel"><div class="panel-head"><h3>${name}</h3><span class="badge">약 5초 간격 갱신</span></div>
    <div class="stack">${rows.length?rows.map((x,i)=>`<div class="list-item"><div class="pill-row"><span class="rank">${rankAt(rows,i)}</span><div><b>${safe(x.name||x.teamName)}</b></div></div><div style="text-align:right"><strong>${msText(x.run.elapsedMs)}</strong><div class="tiny muted">${x.run.verified?'확정':'잠정'}</div></div></div>`).join(''):'<div class="empty">경기 종료 기록을 기다리고 있습니다.</div>'}</div></section>`).join('')}</div>`;
 }
 
@@ -261,7 +261,7 @@ function settingsView(){
   const staleQueue=state.outbox.some(x=>x.generation!==Number(state.data.meta?.generation||0));
   return `${subhead('CONTROL & BACKUP','운영·백업 설정','기록 안전성과 행사 전 점검을 위한 메뉴')}${localStatusNotice()}
    <div class="layout-two"><section class="stack"><div class="panel"><h3>저장 및 연결 상태</h3><div class="stack section-gap">
-     <div class="control-card"><span>Firebase 설정</span><b>${state.configured?'설정됨':'미설정 · 단독 계측'}</b></div>
+     <div class="control-card"><span>Apps Script 주소</span><b>${state.configured?'설정됨':'미설정 · 단독 계측'}</b></div>
      <div class="control-card"><span>연결 상태</span><b>${state.mode==='local'?'기기 내부 저장':state.connected?'서버 연결':'서버 연결 끊김'}</b></div>
      <div class="control-card"><span>서버 미전송</span><b id="queue-count">${state.outbox.length}</b></div>
      <div class="control-card"><span>계측 제어권</span><b>${state.control?'이 기기 보유':'미보유'}</b></div>
@@ -354,7 +354,7 @@ function render(){
   const body=(({
     timer:timerView,slots:slotsView,dashboard,rank:rankView,mc:mcView,settings:settingsView
   })[isViewer()&&!['rank','mc'].includes(state.tab)?'mc':state.tab]||timerView)();
-  app.innerHTML=`<div class="app-shell">${header()}${nav()}<main>${body}</main><footer class="footer"><span>2026 연천피지컬 서바이벌 · 경기 기록관리 v1.3</span><span>기록은 공식 승인 전 잠정 결과입니다.</span></footer></div>${modalHtml()}<div class="toast-stack" role="status" aria-live="polite"></div>`;
+  app.innerHTML=`<div class="app-shell">${header()}${nav()}<main>${body}</main><footer class="footer"><span>2026 연천피지컬 서바이벌 · 경기 기록관리 v1.4</span><span>기록은 공식 승인 전 잠정 결과입니다.</span></footer></div>${modalHtml()}<div class="toast-stack" role="status" aria-live="polite"></div>`;
   refreshClock();
 }
 function refreshClock(){
@@ -371,9 +371,9 @@ setInterval(async()=>{
     const good=await state.cloud.claim(state.deviceId);
     if(!good){state.control=false;notice('다른 기기가 계측 제어권을 획득했습니다.','error');render();return;}
     const r=activeRun();
-    if(r&&!state.outbox.length)await state.cloud.send({'status/current/heartbeatAt':Date.now()},Number(state.data.meta?.generation||0));
+    if(r&&!state.outbox.length)await state.cloud.send({'status/current/heartbeatAt':Date.now()},Number(state.data.meta?.generation||0),uid(),state.deviceId);
   }catch(e){state.error=`계측 제어권 갱신 실패: ${formatError(e)}`;renderHeader();}
-},10000);
+},20000);
 
 async function claim(){
   if(state.mode==='local'){state.control=true;render();return;}
@@ -415,7 +415,7 @@ async function startRace(){
   state.starting=true;
   const mark=performance.now(),now=Date.now();
   const id=`run_${uid().replaceAll('-','')}`;
-  const run={id,type:state.type,targetId:t.id,startedAt:now,endedAt:null,elapsedMs:null,status:'running',verified:false,accuracy:'monotonic',createdBy:state.user?.uid||'local',updatedAt:now};
+  const run={id,type:state.type,targetId:t.id,startedAt:now,endedAt:null,elapsedMs:null,status:'running',verified:false,accuracy:'monotonic',createdBy:state.user?.uid||'local',deviceId:state.deviceId,updatedAt:now};
   state.currentClock={runId:id,perfStart:mark};
   try{await commit({[`runs/${id}`]:run,'status/current':{runId:id,type:state.type,targetId:t.id,startedAt:now,heartbeatAt:now}},'경기 출발');notice('경기 시작! 계측 중입니다.','good');}
   catch(e){state.currentClock=null;notice(`기기 저장 오류: ${formatError(e)}`,'error');}
@@ -454,7 +454,7 @@ async function absentRace(status){
   const previous=latestFor(state.type,t.id);if(previous&&previous.status!=='cancelled')return notice('이미 기록이 있습니다. 기록 관리에서 기존 기록을 수정하세요.','error');
   if(!confirm(`${t.name||t.teamName} 선수를 ${status==='dnf'?'미완주':'실격'} 처리할까요?`))return;
   const now=Date.now(),id=`run_${uid().replaceAll('-','')}`;
-  const r={id,type:state.type,targetId:t.id,startedAt:now,endedAt:now,elapsedMs:null,status,verified:false,accuracy:'manual',createdBy:state.user?.uid||'local',updatedAt:now};
+  const r={id,type:state.type,targetId:t.id,startedAt:now,endedAt:now,elapsedMs:null,status,verified:false,accuracy:'manual',createdBy:state.user?.uid||'local',deviceId:state.deviceId,updatedAt:now};
   await commit({[`runs/${id}`]:r},status);
   const all=targets(), from=all.findIndex(x=>x.id===t.id), done=latestRuns(state.data,state.type);
   const next=all.slice(from+1).find(x=>!done[x.id]||done[x.id].status==='cancelled');

@@ -1,73 +1,108 @@
-import {firebaseConfig, EVENT_ID} from './firebase-config.js';
-import {applyPatches,deepCopy,uid} from './core.js';
-const VERSION='12.19.0';
-export const isConfigured=()=>['apiKey','authDomain','databaseURL','projectId','appId'].every(k=>Boolean(firebaseConfig[k]?.trim()));
-const generationOf=data=>Number(data?.meta?.generation||0);
+import {APPS_SCRIPT_URL, EVENT_ID} from './apps-script-config.js';
+import {uid} from './core.js';
 
+const POLL_MS=5000; // Apps Script는 푸시 방식이 아닙니다. 대략 5초 폴링.
+const REQUEST_TIMEOUT_MS=45000;
+export const isConfigured=()=>/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec(?:\?.*)?$/.test(APPS_SCRIPT_URL.trim());
+
+/**
+ * GitHub Pages <-> Apps Script 통신
+ * - 읽기: JSONP (Apps Script ContentService의 외부 출처 CORS 제약을 우회)
+ * - 쓰기: 숨겨진 iframe으로 POST form, 서버 수신 여부는 다음 JSONP 상태 조회로 검증
+ * - 요청 ID를 고정해서 재시도에도 서버에서 중복 처리되지 않게 합니다.
+ */
 export async function createCloud(callbacks) {
-  const [{initializeApp},{getAuth,onAuthStateChanged,signInAnonymously,setPersistence,browserLocalPersistence},{getDatabase,ref,onValue,runTransaction,goOnline}]=await Promise.all([
-    import(`https://www.gstatic.com/firebasejs/${VERSION}/firebase-app.js`),
-    import(`https://www.gstatic.com/firebasejs/${VERSION}/firebase-auth.js`),
-    import(`https://www.gstatic.com/firebasejs/${VERSION}/firebase-database.js`)
-  ]);
-  const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getDatabase(app);
-  await setPersistence(auth,browserLocalPersistence);
-  let subscribed=false, currentUser=null;
-  onAuthStateChanged(auth,async user=>{
-    if(!user){
-      currentUser=null;
-      try{await signInAnonymously(auth);}catch(e){callbacks.onError(e);}
-      return;
-    }
-    currentUser=user;
-    if(subscribed)return;
-    subscribed=true;
-    callbacks.onReady(user);
-    onValue(ref(db,`events/${EVENT_ID}`),snapshot=>callbacks.onData(snapshot.val()||null),e=>callbacks.onError(e));
-    onValue(ref(db,'.info/connected'),snap=>callbacks.onConnected(Boolean(snap.val())),e=>callbacks.onError(e));
-    onValue(ref(db,'.info/serverTimeOffset'),snap=>callbacks.onServerOffset(Number(snap.val())||0));
-  },e=>callbacks.onError(e));
-  const eventRef=ref(db,`events/${EVENT_ID}`);
+  if(!isConfigured())throw Error('Apps Script 웹 앱 주소(/exec)가 잘못되었습니다.');
+  let disposed=false, polling=false, lastOK=0, connected=false;
+  let latest=null, seq=0;
+  const waiters=new Map();
+
+  function setConnected(v){
+    if(connected!==v){connected=v;callbacks.onConnected(v);}
+  }
+  function getJSONP(extra={}){
+    return new Promise((resolve,reject)=>{
+      const cb=`__yc_callback_${Date.now()}_${++seq}`;
+      const uri=new URL(APPS_SCRIPT_URL);
+      uri.searchParams.set('action','state');
+      uri.searchParams.set('event',EVENT_ID);
+      uri.searchParams.set('callback',cb);
+      uri.searchParams.set('_',String(Date.now()));
+      const script=document.createElement('script');
+      let ended=false;
+      const cleanup=()=>{
+        if(ended)return;ended=true;
+        clearTimeout(timer);script.remove();try{delete window[cb];}catch{}
+      };
+      window[cb]=data=>{cleanup();resolve(data);};
+      script.onerror=()=>{cleanup();reject(new Error('Apps Script 읽기 실패: URL·배포 권한·인터넷을 확인하세요.'));};
+      const timer=setTimeout(()=>{cleanup();reject(new Error('Apps Script 응답 시간 초과'));},13000);
+      script.src=uri.toString();
+      document.head.appendChild(script);
+    });
+  }
+  async function poll(){
+    if(disposed||polling)return;
+    polling=true;
+    try{
+      const response=await getJSONP();
+      if(!response?.ok)throw Error(response?.error||'Apps Script 조회 오류');
+      lastOK=Date.now();setConnected(true);
+      latest=response.data||{};
+      callbacks.onServerOffset(Number(response.serverTime||Date.now())-Date.now());
+      callbacks.onData(latest);
+      const ack=latest.acks||{};
+      for(const [id,w] of waiters){
+        const status=ack[id];
+        if(!status)continue;
+        waiters.delete(id);clearTimeout(w.timer);
+        if(status.ok)w.resolve({...(status.result||{}),data:latest});
+        else w.reject(new Error(status.error||'서버가 요청을 거절했습니다.'));
+      }
+    }catch(e){
+      if(Date.now()-lastOK>POLL_MS*2)setConnected(false);
+      callbacks.onError(e);
+    }finally{polling=false;}
+  }
+  function postForm(payload){
+    // Apps Script Web App은 외부 도메인 fetch에 CORS 응답을 주지 않는 경우가 있어
+    // HTML form POST를 사용하고 JSONP 폴링으로 영속 저장 ACK를 별도 확인합니다.
+    const iframe=document.createElement('iframe');
+    const frameName='yc_post_'+uid().replace(/[^A-Za-z0-9]/g,'');
+    iframe.name=frameName;
+    iframe.title='Apps Script 데이터 전송';
+    iframe.setAttribute('aria-hidden','true');
+    iframe.style.cssText='display:none;width:0;height:0;border:0';
+    const form=document.createElement('form');
+    form.method='POST';form.action=APPS_SCRIPT_URL;form.target=frameName;form.style.display='none';
+    const input=document.createElement('input');input.type='hidden';input.name='payload';input.value=JSON.stringify(payload);
+    form.appendChild(input);document.body.appendChild(iframe);document.body.appendChild(form);
+    try{form.submit();}finally{form.remove();setTimeout(()=>iframe.remove(),15000);}
+  }
+  async function command(commandType, fields, requestId=uid()){
+    if(!connected)throw Error('Apps Script 연결을 확인한 뒤 다시 시도하세요.');
+    if(waiters.has(requestId))return waiters.get(requestId).promise;
+    let resolve,reject;
+    const promise=new Promise((rs,rj)=>{resolve=rs;reject=rj;});
+    const waiter={resolve,reject,promise,timer:null};
+    waiters.set(requestId,waiter);
+    waiter.timer=setTimeout(()=>{
+      if(waiters.get(requestId)===waiter){waiters.delete(requestId);reject(new Error('서버 저장 확인이 늦어지고 있습니다. 기기의 미전송 기록을 유지합니다.'));}
+    },REQUEST_TIMEOUT_MS);
+    try{postForm({id:requestId,command:commandType,event:EVENT_ID,...fields});}
+    catch(e){clearTimeout(waiter.timer);waiters.delete(requestId);reject(e);}
+    // 요청 전송 직후 첫 확인. 서버가 아직 처리 중이면 다음 폴링에서 ACK됩니다.
+    setTimeout(()=>void poll(),1600);
+    return promise;
+  }
+  const interval=setInterval(()=>void poll(),POLL_MS);
+  setTimeout(()=>{callbacks.onReady(null);void poll();},0);
   return {
-    // 이벤트 루트 트랜잭션으로 초기화 세대 비교. 오래된 오프라인 기록이 초기화 후 다시 살아나는 일을 차단.
-    send:async(patches,expectedGeneration)=>{
-      if(!currentUser)throw Error('Firebase 익명 연결을 기다리는 중입니다.');
-      const tx=await runTransaction(eventRef,current=>{
-        if(generationOf(current)!==expectedGeneration)return;
-        return applyPatches(deepCopy(current||{}),patches);
-      },{applyLocally:false});
-      if(!tx.committed)throw Error('기록 초기화 버전이 달라 전송을 차단했습니다. 기존 미전송 기록을 백업하고 운영본부에 확인하세요.');
-    },
-    reset:async(scope,expectedGeneration)=>{
-      if(!['individual','relay','all'].includes(scope))throw Error('잘못된 초기화 범위입니다.');
-      if(!currentUser)throw Error('Firebase 연결이 필요합니다.');
-      const id=`audit_${uid().replaceAll('-','')}`;
-      const tx=await runTransaction(eventRef,current=>{
-        if(generationOf(current)!==expectedGeneration||current?.status?.current)return;
-        const next=deepCopy(current||{});
-        if(scope==='all') { next.runs={}; next.audit={}; }
-        else { next.runs=Object.fromEntries(Object.entries(next.runs||{}).filter(([,r])=>r.type!==scope)); }
-        next.status={...(next.status||{}),current:null};
-        next.clockLock=null;
-        next.meta={...(next.meta||{}),generation:expectedGeneration+1,resetAt:Date.now(),resetScope:scope};
-        next.audit={...(next.audit||{}),[id]:{id,action:'기록 초기화',detail:`범위: ${scope}`,at:Date.now(),actor:'ANONYMOUS'}};
-        return next;
-      },{applyLocally:false});
-      if(!tx.committed)throw Error('다른 기기의 경기 진행 또는 기록 버전 변경으로 초기화가 취소됐습니다.');
-      return tx.snapshot.val();
-    },
-    claim:async deviceId=>{
-      if(!currentUser)throw Error('서버 연결 대기 중입니다.');
-      const now=Date.now();
-      const tx=await runTransaction(ref(db,`events/${EVENT_ID}/clockLock`),value=>{
-        if(!value||value.owner===deviceId||value.until<now)return {owner:deviceId,until:now+35000,updatedAt:now};
-      },{applyLocally:false});
-      return tx.committed;
-    },
-    release:async deviceId=>{
-      if(!currentUser)return;
-      await runTransaction(ref(db,`events/${EVENT_ID}/clockLock`),value=>value?.owner===deviceId?null:undefined,{applyLocally:false});
-    },
-    wake:()=>goOnline(db)
+    send:(patches,generation,requestId=uid(),deviceId='')=>command('mutation',{patches,generation,deviceId},requestId),
+    claim:async deviceId=>(await command('claim',{deviceId})).claimed===true,
+    release:async deviceId=>{await command('release',{deviceId});},
+    reset:async(scope,generation)=>{const result=await command('reset',{scope,generation});return result.data;},
+    wake:()=>void poll(),
+    stop:()=>{disposed=true;clearInterval(interval);for(const waiter of waiters.values()){clearTimeout(waiter.timer);waiter.reject(new Error('연결 종료'));}waiters.clear();}
   };
 }

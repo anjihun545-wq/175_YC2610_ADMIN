@@ -1,4 +1,4 @@
-// Simulated cloud integration: verifies application behavior, NOT Firebase network.
+// Simulated cloud integration: verifies application behavior, NOT Apps Script network.
 // node --experimental-vm-modules tests/test_sync_guards.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import vm from 'node:vm';import path from 'node:path';import {fileURLToPath} from 'node:url';
@@ -30,7 +30,7 @@ const load=f=>{
 const main=load('js/app.js');await main.link(async(spec,parent)=>load(path.posix.normalize(path.posix.join(path.posix.dirname(parent.identifier),spec))));await main.evaluate();
 const idle=async()=>{for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r))};
 const click=async action=>handlers.click({target:{closest:s=>s==='[data-action]'?{dataset:{action}}:null}});
-await idle();assert.match(app.innerHTML,/서버 동기화 정상/);
+await idle();assert.match(app.innerHTML,/서버 저장 확인 정상/);
 await click('start');assert.equal(Object.keys(data?.runs||{}).length,0,'start requires claim');
 await click('claim');await click('start');await idle();
 assert.equal(Object.keys(data.runs).length,1);assert.equal(items.length,0,'server ACK empties queue');

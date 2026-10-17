@@ -40,7 +40,7 @@ const load=f=>{
  if(f==='js/storage.js'){
    module=new vm.SyntheticModule(Object.keys(fakeStorage),function(){for(const [key,value] of Object.entries(fakeStorage))this.setExport(key,value)},{context});
  }else if(f==='js/cloud.js'){
-   module=new vm.SyntheticModule(['isConfigured','createCloud'],function(){this.setExport('isConfigured',()=>false);this.setExport('createCloud',()=>{throw Error('Firebase not available')})},{context});
+   module=new vm.SyntheticModule(['isConfigured','createCloud'],function(){this.setExport('isConfigured',()=>false);this.setExport('createCloud',()=>{throw Error('Apps Script not configured')})},{context});
  }else{
    module=new vm.SourceTextModule(fs.readFileSync(path.join(root,f),'utf8'),{context,identifier:f});
  }
@@ -81,7 +81,7 @@ await change('race-type','individual');
 await press('start');
 assert.equal(info().runs.length,250,'completed slot must not restart');
 assert.equal(queue.length,0,'local mode must not claim unsent Firebase records');
-console.log('PASS 250 sequential timing records, fixed slots 200+50, already-finished guard, local status, zero cloud outbox');
+console.log('PASS 250 sequential timing records, fixed slots 200+50, already-finished guard, local status, zero server outbox');
 
 // 초기화: 백업 확인 + 확인 문구 필수 / 개인전만 초기화해도 계주 기록은 유지
 await press('open-reset');
