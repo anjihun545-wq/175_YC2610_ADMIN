@@ -5,14 +5,14 @@ import fs from 'node:fs';import vm from 'node:vm';import path from 'node:path';i
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const handlers={},app={addEventListener:(k,v)=>handlers[k]=v,innerHTML:''};
 let data=null,items=[],callbacks,connected=false,server={},id=0;
-const storage={loadLocal:async()=>({data,queue:[...items]}),saveSnapshot:async x=>{data=structuredClone(x)},persistChange:async(x,item)=>{data=structuredClone(x);if(item)items.push(item)},removeOutbox:async id=>{items=items.filter(x=>x.id!==id)}};
+const storage={loadLocal:async()=>({data,queue:[...items]}),saveSnapshot:async x=>{data=structuredClone(x)},persistChange:async(x,item)=>{data=structuredClone(x);if(item)items.push(item)},removeOutbox:async id=>{items=items.filter(x=>x.id!==id)},clearAll:async()=>{data=null;items=[]},clearOutbox:async()=>{items=[]}};
 const patch=(obj,d)=>{for(const [key,value] of Object.entries(d)){const bits=key.split('/');let dst=obj;for(const bit of bits.slice(0,-1))dst=dst[bit]??={};if(value===null)delete dst[bits.at(-1)];else dst[bits.at(-1)]=structuredClone(value);}};
 const cloud={
  isConfigured:()=>true,
  createCloud:async cb=>{
   callbacks=cb;
-  queueMicrotask(()=>{cb.onIdentity({uid:'op',email:'ops@placeholder.invalid'},'admin');cb.onConnected(true);cb.onData(server);connected=true});
-  return {send:async p=>{if(!connected)throw Error('network offline');patch(server,p);queueMicrotask(()=>callbacks.onData(server))},claim:async()=>true,release:async()=>{},login:async()=>{},logout:async()=>{}}
+  queueMicrotask(()=>{cb.onReady({uid:'anonymous-id'});cb.onConnected(true);cb.onData(server);connected=true});
+  return {send:async(p,generation)=>{if(generation!==(server.meta?.generation||0))throw Error('reset generation changed');if(!connected)throw Error('network offline');patch(server,p);queueMicrotask(()=>callbacks.onData(server))},claim:async()=>true,release:async()=>{},reset:async()=>({})}
  }
 };
 const document={querySelector:s=>s==='#app'?app:null,getElementById:()=>null,activeElement:{tagName:'BODY'}};

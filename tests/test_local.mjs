@@ -14,16 +14,19 @@ const fakeStorage={
  loadLocal:async()=>({data:snapshot,queue:queue.slice()}),
  saveSnapshot:async d=>{snapshot=structuredClone(d)},
  persistChange:async(d,q)=>{snapshot=structuredClone(d);if(q)queue.push(q)},
- removeOutbox:async id=>{const i=queue.findIndex(x=>x.id===id);if(i>=0)queue.splice(i,1)}
+ removeOutbox:async id=>{const i=queue.findIndex(x=>x.id===id);if(i>=0)queue.splice(i,1)},
+ clearAll:async()=>{snapshot=null;queue.length=0;},clearOutbox:async()=>{queue.length=0;}
 };
 const doc={
  querySelector:s=>s==='#app'?fakeApp:null,
  getElementById:s=>s==='slot-jump'?{value:'200'}:null,
  activeElement:{tagName:'BODY'},
+ body:{appendChild:()=>{}},createElement:()=>({click:()=>{},remove:()=>{}}),
 };
 const win={addEventListener:(n,fn)=>{handlers[`window_${n}`]=fn}};
 const context=vm.createContext({
- document:doc,window:win,location:{search:''},URLSearchParams,URL,
+ document:doc,window:win,location:{search:''},URLSearchParams,URL:class extends URL{static createObjectURL=()=> 'blob:test';static revokeObjectURL=()=>{};},
+ FormData:class{constructor(form){this.values=form.values||{};}get(key){return this.values[key]??null;}},
  console,Date,JSON,Math,Number,String,Object,Array,Boolean,Error,Promise,Map,Set,
  Blob,performance:{now:()=>{pendingTimer+=1534.81;return pendingTimer;}},
  sessionStorage:{getItem:()=>null,setItem:()=>{}},
@@ -79,3 +82,19 @@ await press('start');
 assert.equal(info().runs.length,250,'completed slot must not restart');
 assert.equal(queue.length,0,'local mode must not claim unsent Firebase records');
 console.log('PASS 250 sequential timing records, fixed slots 200+50, already-finished guard, local status, zero cloud outbox');
+
+// 초기화: 백업 확인 + 확인 문구 필수 / 개인전만 초기화해도 계주 기록은 유지
+await press('open-reset');
+await press('export-json');
+const submitReset=async(scope,backup='on',phrase='기록초기화')=>{await handlers.submit({preventDefault(){},target:{getAttribute:n=>n==='id'?'reset-form':null,values:{scope,backup,phrase}}});};
+await submitReset('individual');
+assert.equal(info().runs.length,50,'only relay runs remain after individual reset');
+assert.equal(Object.keys(snapshot.participants||{}).length,200);
+assert.equal(Object.keys(snapshot.teams||{}).length,50);
+assert.equal(snapshot.meta.generation,1);
+await press('open-reset');await press('export-json');await submitReset('all');
+assert.equal(info().runs.length,0,'all results cleared after full reset');
+assert.equal(snapshot.meta.generation,2);
+assert.equal(Object.keys(snapshot.participants).length,200);
+assert.equal(Object.keys(snapshot.teams).length,50);
+console.log('PASS backup-gated individual reset preserves relay records, full reset clears all records, 200/50 slots preserved');

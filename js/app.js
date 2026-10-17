@@ -1,5 +1,5 @@
 import {firebaseConfig, EVENT_ID} from './firebase-config.js';
-import {loadLocal,saveSnapshot,persistChange,removeOutbox} from './storage.js';
+import {loadLocal,saveSnapshot,persistChange,removeOutbox,clearAll,clearOutbox} from './storage.js';
 import {emptyData,uid,safe,msText,tsText,applyPatches,deepCopy,sortByBib,latestRuns,rankings,statusLabel,csvDownload,presetData,INDIVIDUAL_COUNT,TEAM_COUNT,padBib} from './core.js';
 import {isConfigured,createCloud} from './cloud.js';
 
@@ -7,19 +7,19 @@ function perTabDeviceId(){
   try{let value=sessionStorage.getItem('ycps-clock-tab');if(!value){value=uid();sessionStorage.setItem('ycps-clock-tab',value);}return value;}catch{return uid();}
 }
 const state={
-  configured:isConfigured(), cloud:null, mode:isConfigured()?'auth':'local', role:null,user:null,connected:false,cloudLoaded:false,storageReady:false,
+  configured:isConfigured(), cloud:null, mode:isConfigured()?'cloud':'local', user:null,connected:false,cloudLoaded:false,storageReady:false,
   data:presetData(emptyData()), outbox:[],tab:new URLSearchParams(location.search).get('view')==='mc'?'mc':'timer',
   type:'individual', selectedId:'',rankType:'individual',division:'all', search:'', currentClock:null,
   control:false, lockPending:false, sending:false, starting:false, finishing:false, offset:0, error:'',lastBackup:0,
-  deviceId:perTabDeviceId(), modal:'', editId:'', toastCount:0
+  deviceId:perTabDeviceId(), modal:'', editId:'', toastCount:0,readOnly:new URLSearchParams(location.search).get('view')==='mc',backupAcknowledged:false,resetting:false
 };
 const app=document.querySelector('#app');
 const normText=x=>String(x??'').trim().slice(0,140);
 const htmlOptions=(items, value, label)=>items.map(x=>`<option value="${safe(x.id)}" ${x.id===value?'selected':''}>${safe(label(x))}</option>`).join('');
-const isAdmin=()=>state.mode==='local'||state.role==='admin';
-const isViewer=()=>state.role==='viewer';
-const canUse=()=>state.mode==='local'||!!state.role;
-const canClock=()=>isAdmin()&&state.control&&state.storageReady;
+const isAdmin=()=>!state.readOnly;
+const isViewer=()=>state.readOnly;
+const canUse=()=>true;
+const canClock=()=>isAdmin()&&state.control&&state.storageReady&&!state.resetting;
 const list=(type)=>Object.values(state.data[type]||{});
 const targets=()=>list(state.type==='individual'?'participants':'teams').sort(sortByBib);
 const selected=()=>targets().find(x=>x.id===state.selectedId)||null;
@@ -59,7 +59,7 @@ function formatError(e){return e?.message||String(e);}
 async function commit(patches,activity=''){
   if(!isAdmin())throw Error('운영자만 기록을 변경할 수 있습니다.');
   const updated=presetData(applyPatches(deepCopy(state.data),patches));
-  const item=state.configured?{id:uid(),createdAt:Date.now(),patches,activity}:null;
+  const item=state.configured?{id:uid(),createdAt:Date.now(),patches,activity,generation:Number(state.data.meta?.generation||0)}:null;
   await persistChange(updated,item);
   state.data=updated;
   if(item)state.outbox.push(item);
@@ -67,13 +67,14 @@ async function commit(patches,activity=''){
   if(item)void flush();
 }
 async function flush(){
-  if(!state.cloud||!state.connected||!isAdmin()||state.sending)return;
+  if(!state.cloud||!state.connected||!state.cloudLoaded||!isAdmin()||state.sending||state.resetting)return;
   state.sending=true;
   try{
     while(state.outbox.length&&state.connected&&isAdmin()){
       const task=state.outbox[0];
       try{
-        await state.cloud.send(task.patches); // Firebase 서버 ACK 후에만 대기열에서 삭제
+        if(task.generation!==Number(state.data.meta?.generation||0)) throw Error('초기화 전 미전송 기록이 있습니다. 자동 재전송을 중단했습니다. 운영본부에서 백업 후 확인하세요.');
+        await state.cloud.send(task.patches,task.generation); // Firebase 서버 ACK 후에만 대기열에서 삭제
         await removeOutbox(task.id);
         state.outbox.shift();
         renderHeader();
@@ -88,7 +89,10 @@ async function flush(){
 function eventDataUpdate(remote){
   if(!canUse())return;
   let data=Object.assign(emptyData(),remote||{});
-  for(const task of state.outbox)data=applyPatches(data,task.patches);
+  for(const task of state.outbox){
+    if(task.generation===Number(data.meta?.generation||0)) data=applyPatches(data,task.patches);
+    else state.error='초기화 이전에 생성된 미전송 기록이 남아 있습니다. 자동 전송이 중지되었습니다.';
+  }
   state.data=presetData(data);
   state.cloudLoaded=true;
   chooseDefault();
@@ -104,20 +108,12 @@ async function boot(){
   }catch(e){state.error=`기기 저장소 오류: ${formatError(e)}`;}
   render();
   if(!state.configured){state.mode='local';state.control=true;render();return;}
-  state.mode='auth';render();
+  state.mode='cloud';render();
   try{
     state.cloud=await createCloud({
-      onIdentity:(user,role)=>{
-        state.user=user;state.role=role;
-        state.mode=user?'cloud':'auth';
-        state.control=false;
-        state.cloudLoaded=false;
-        state.connected=user?state.connected:false;
-        render();
-        if(role==='admin')void flush();
-      },
+      onReady:user=>{state.user=user;render();},
       onData:eventDataUpdate,
-      onConnected:connected=>{const changed=connected!==state.connected;state.connected=connected;if(changed&&['mc','dashboard','settings'].includes(state.tab))render();else renderHeader();if(connected)void flush();},
+      onConnected:connected=>{const changed=connected!==state.connected;state.connected=connected;if(changed)render();else renderHeader();if(connected)void flush();},
       onServerOffset:offset=>state.offset=offset,
       onError:error=>{state.error=`Firebase 오류: ${formatError(error)}`;notice(state.error,'error');renderHeader();}
     });
@@ -127,8 +123,8 @@ function header(){
   const [name,color]=connectionName();
   return `<header class="topbar"><div class="brand"><div class="brand-icon">Y26</div><div><div class="brand-kicker">YEONCHEON PHYSICAL SURVIVAL</div><h1>2026 연천피지컬 서바이벌</h1></div></div>
   <div class="header-right"><span id="connection-pill" class="status-pill ${color}">${safe(name)}</span>
-  <span class="status-pill">${state.mode==='local'?'단독 계측':state.role==='admin'?'운영자':state.role==='viewer'?'MC 조회':'로그인 필요'}</span>
-  ${state.user?`<button class="btn sm ghost" data-action="logout">로그아웃</button>`:''}</div></header>`;
+  <span class="status-pill">${state.readOnly?'MC 조회 전용':state.mode==='local'?'단독 계측':'공유 계측'}</span>
+</div></header>`;
 }
 function renderHeader(){
   const p=document.querySelector('#connection-pill');if(!p)return;
@@ -262,6 +258,7 @@ function mcView(){
 
 function settingsView(){
   const audits=Object.values(state.data.audit||{}).sort((a,b)=>b.at-a.at).slice(0,25);
+  const staleQueue=state.outbox.some(x=>x.generation!==Number(state.data.meta?.generation||0));
   return `${subhead('CONTROL & BACKUP','운영·백업 설정','기록 안전성과 행사 전 점검을 위한 메뉴')}${localStatusNotice()}
    <div class="layout-two"><section class="stack"><div class="panel"><h3>저장 및 연결 상태</h3><div class="stack section-gap">
      <div class="control-card"><span>Firebase 설정</span><b>${state.configured?'설정됨':'미설정 · 단독 계측'}</b></div>
@@ -270,19 +267,79 @@ function settingsView(){
      <div class="control-card"><span>계측 제어권</span><b>${state.control?'이 기기 보유':'미보유'}</b></div>
    </div><div class="tools section-gap"><button class="btn" data-action="retry" ${!state.connected||!state.outbox.length?'disabled':''}>미전송 기록 재전송</button>${state.mode!=='local'?`<button class="btn" data-action="claim" ${!isAdmin()||!state.connected?'disabled':''}>제어권 갱신</button><button class="btn ghost" data-action="release" ${!state.control?'disabled':''}>제어권 반납</button>`:''}</div>
    ${state.error?`<div class="banner red">${safe(state.error)}</div>`:''}</div>
+   ${staleQueue?`<div class="panel"><h3>이전 회차 미전송 기록 발견</h3><div class="banner red">다른 기기에서 기록 초기화가 실행되어 이 기기의 전송 대기 기록을 서버에 전송할 수 없습니다. JSON 백업 후 폐기 여부를 확인해야 계측을 재개할 수 있습니다.</div><div class="tools section-gap"><button class="btn" data-action="export-json">미전송 포함 JSON 백업</button><button class="btn" data-action="discard-stale">이전 기록 전송 대기 폐기</button></div></div>`:''}
+   <div class="panel"><h3>기록 초기화</h3><p class="notice-line">개인전·단체전·전체 기록을 초기화할 수 있습니다. 내장된 200명·50팀 번호는 유지됩니다. 초기화 전 반드시 JSON 백업이 필요하며, 다른 기기에도 결과가 반영됩니다. 로그인 없는 공개 운영 방식은 누구든 기록을 바꿀 수 있으므로 링크 공유에 주의하세요.</p><button class="btn" data-action="open-reset" ${state.readOnly||state.resetting?'disabled':''}>기록 초기화 관리</button></div>
    <div class="panel"><h3>결과 자료 백업</h3><p class="notice-line">CSV 파일은 Excel에서 열 수 있습니다. 실제 행사 기록은 별도의 PC와 USB에도 백업하는 것을 권장합니다.</p>
    <div class="stack section-gap"><button class="btn primary" data-action="export-all">전체 기록 CSV 내려받기</button><button class="btn" data-action="export-people">개인 200명 번호·기록 CSV</button><button class="btn" data-action="export-teams">단체 50팀 번호·기록 CSV</button><button class="btn" data-action="export-history">전체 계측 시도 이력 CSV</button><button class="btn" data-action="export-audit">수정 이력 CSV</button></div></div></section>
    <section class="panel"><h3>기록 변경 이력</h3><div class="stack section-gap">${audits.length?audits.map(x=>`<div class="list-item"><div><b>${safe(x.action)}</b><div class="muted tiny">${safe(x.detail||'')}</div><div class="muted tiny">${tsText(x.at)}</div></div><span class="chip">${safe(x.actor||'LOCAL')}</span></div>`).join(''):'<div class="empty">아직 수정 이력이 없습니다.</div>'}</div></section></div>`;
 }
-function loginView(){
-  return `<div class="login-wrap"><div class="panel"><div class="overline">SECURE LOGIN</div><h2>운영자 · MC 로그인</h2><p class="small muted">Firebase 계정으로 로그인합니다. 계측·기록 변경은 운영자만 가능합니다.</p>
-   ${state.error?`<div class="banner red">${safe(state.error)}</div>`:''}
-   ${state.user&&state.role!=='admin'&&state.role!=='viewer'?`<div class="banner">계정 로그인은 성공했지만 접근 권한이 없습니다. Firebase Realtime Database의 roles/${safe(state.user.uid)}에 admin 또는 viewer를 지정해야 합니다.<p class="small">UID: <code>${safe(state.user.uid)}</code></p></div>`:''}
-   <form id="login-form"><div class="field"><label>계정 이메일</label><input type="email" name="email" autocomplete="username" required/></div><div class="field"><label>비밀번호</label><input type="password" name="password" autocomplete="current-password" required/></div><button class="btn primary section-gap" type="submit">로그인</button></form>
-   <div class="notice-line">계정은 Firebase Authentication에서 미리 등록해야 합니다. 자세한 방법은 함께 제공한 SETUP_GUIDE.md를 확인하세요.</div></div></div>`;
+function exportJson(){
+  const filename=`2026_연천피지컬_전체백업_${new Date().toISOString().replaceAll(':','-')}.json`;
+  const blob=new Blob([JSON.stringify({eventId:EVENT_ID,exportedAt:new Date().toISOString(),data:state.data,pendingOutbox:state.outbox},null,2)],{type:'application/json;charset=utf-8'});
+  const url=URL.createObjectURL(blob),link=document.createElement('a');
+  link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),3000);
+}
+async function discardStaleOutbox(){
+ const stale=state.outbox.some(x=>x.generation!==Number(state.data.meta?.generation||0));
+ if(!stale)throw Error('폐기할 과거 미전송 기록이 없습니다.');
+ if(!state.backupAcknowledged)throw Error('먼저 미전송 포함 JSON 백업 파일을 저장하세요.');
+ if(!confirm('과거 미전송 기록을 폐기할까요? 취소된 기록은 서버에 전송되지 않습니다.'))return;
+ if(!confirm('마지막 확인: 저장된 JSON 백업을 확인했으며 서버에 전송되지 않아도 괜찮습니까?'))return;
+ await clearOutbox();state.outbox=[];state.backupAcknowledged=false;state.error='';
+ render();notice('이전 회차 미전송 대기열을 폐기했습니다.','good');
+}
+function resetModal(){
+  const active=Boolean(activeRun());
+  return `<div class="dialog-backdrop" id="dialog-backdrop"><div class="dialog" role="dialog" aria-modal="true"><h3>경기 기록 초기화</h3>
+  <div class="banner red">주의: 서버에 저장된 기록이 변경되며 다른 PC·MC 화면도 함께 초기화됩니다. 로그인 없는 운영 방식은 외부인 조작에 취약합니다. 참가번호 200개와 팀번호 50개는 유지됩니다.</div>
+  <p class="notice-line">① 백업 다운로드 → ② 다운로드 파일 확인 → ③ 초기화 범위 선택 → ④ 확인 문구 입력</p>
+  <button type="button" class="btn primary" data-action="export-json">1. 전체 기록 JSON 백업 다운로드</button>
+  <form class="stack section-gap" id="reset-form">
+  <div class="field"><label>초기화 범위</label><select name="scope"><option value="individual">개인전 200명 기록만</option><option value="relay">단체전 50팀 기록만</option><option value="all">개인전 + 단체전 전체 기록</option></select></div>
+  <label class="small"><input type="checkbox" name="backup" required ${state.backupAcknowledged?'':'disabled'} /> 다운로드한 JSON 파일을 실제로 확인했습니다</label>
+  <div class="field"><label>확인 문구 · 정확히 <b>기록초기화</b> 입력</label><input name="phrase" required autocomplete="off" placeholder="기록초기화" /></div>
+  ${active?'<div class="banner red">경기가 진행 중입니다. 종료 후에만 초기화할 수 있습니다.</div>':''}
+  ${state.outbox.length?'<div class="banner red">서버 미전송 기록이 있습니다. 먼저 전송을 완료하세요.</div>':''}
+  <div class="actions"><button type="button" class="btn" data-action="close-modal">취소</button><button class="btn" type="submit" ${active||state.outbox.length||!state.backupAcknowledged||state.resetting?'disabled':''}>기록 초기화 실행</button></div>
+  </form></div></div>`;
+}
+async function resetRecords(form){
+  if(state.resetting||state.readOnly)throw Error('현재 이 화면에서는 초기화할 수 없습니다.');
+  const d=new FormData(form),scope=String(d.get('scope'));
+  if(!['individual','relay','all'].includes(scope))throw Error('초기화 범위가 잘못됐습니다.');
+  if(!state.backupAcknowledged||d.get('backup')!=='on')throw Error('백업 파일을 실제로 저장한 뒤 확인하세요.');
+  if(String(d.get('phrase')||'').trim()!=='기록초기화')throw Error('확인 문구가 일치하지 않습니다.');
+  if(activeRun()||state.starting||state.finishing)throw Error('진행 중인 경기를 먼저 종료하세요.');
+  if(state.outbox.length||state.sending)throw Error('미전송 데이터가 있습니다. 서버 저장 완료를 확인하세요.');
+  if(state.configured&&(!state.cloud||!state.connected||!state.cloudLoaded))throw Error('서버가 연결되어야 전체 기기 기록을 초기화할 수 있습니다.');
+  const label=scope==='individual'?'개인전 200명':scope==='relay'?'단체전 50팀':'개인전·단체전 전체';
+  if(!confirm(`${label} 기록을 초기화할까요?\n이 작업은 다른 기기에도 반영되며 복구는 백업 파일을 이용해야 합니다.`))return;
+  state.resetting=true;state.modal='';render();
+  try{
+    if(state.configured){
+      const next=await state.cloud.reset(scope,Number(state.data.meta?.generation||0));
+      state.data=presetData(Object.assign(emptyData(),next||{}));
+      await saveSnapshot(state.data);
+      state.control=false;
+    }else{
+      const next=deepCopy(state.data);
+      if(scope==='all'){next.runs={};next.audit={};}
+      else next.runs=Object.fromEntries(Object.entries(next.runs||{}).filter(([,r])=>r.type!==scope));
+      next.status={...(next.status||{}),current:null};
+      next.meta={...(next.meta||{}),generation:Number(next.meta?.generation||0)+1,resetAt:Date.now(),resetScope:scope};
+      const id=`audit_${uid().replaceAll('-','')}`;
+      next.audit[id]={id,action:'기록 초기화',detail:label,at:Date.now(),actor:'LOCAL'};
+      await clearAll();await saveSnapshot(presetData(next));state.data=presetData(next);
+    }
+    state.selectedId='';state.currentClock=null;chooseDefault();state.backupAcknowledged=false;
+    notice(`${label} 기록 초기화 완료. 번호 슬롯은 유지됩니다.`,'good');
+  }catch(e){state.error=`초기화 실패: ${formatError(e)}`;notice(state.error,'error');}
+  finally{state.resetting=false;render();}
 }
 function modalHtml(){
   if(!state.modal)return '';
+  if(state.modal==='reset')return resetModal();
   if(state.modal==='edit-run'){
     const r=state.data.runs[state.editId];if(!r)return '';
     return `<div class="dialog-backdrop" id="dialog-backdrop"><div class="dialog" role="dialog" aria-modal="true"><h3>경기기록 수정 · ${safe(entityName(r))}</h3><p class="small muted">기록 수정은 이력에 남고 확정 상태가 해제됩니다.</p>
@@ -294,11 +351,10 @@ function modalHtml(){
   return '';
 }
 function render(){
-  const roleDenied=state.configured&&!canUse();
-  const body=roleDenied?loginView():(({
+  const body=(({
     timer:timerView,slots:slotsView,dashboard,rank:rankView,mc:mcView,settings:settingsView
   })[isViewer()&&!['rank','mc'].includes(state.tab)?'mc':state.tab]||timerView)();
-  app.innerHTML=`<div class="app-shell">${header()}${roleDenied?'':nav()}<main>${body}</main>${roleDenied?'':`<footer class="footer"><span>2026 연천피지컬 서바이벌 · 경기 기록관리 v1.2</span><span>기록은 공식 승인 전 잠정 결과입니다.</span></footer>`}</div>${modalHtml()}<div class="toast-stack" role="status" aria-live="polite"></div>`;
+  app.innerHTML=`<div class="app-shell">${header()}${nav()}<main>${body}</main><footer class="footer"><span>2026 연천피지컬 서바이벌 · 경기 기록관리 v1.3</span><span>기록은 공식 승인 전 잠정 결과입니다.</span></footer></div>${modalHtml()}<div class="toast-stack" role="status" aria-live="polite"></div>`;
   refreshClock();
 }
 function refreshClock(){
@@ -315,13 +371,13 @@ setInterval(async()=>{
     const good=await state.cloud.claim(state.deviceId);
     if(!good){state.control=false;notice('다른 기기가 계측 제어권을 획득했습니다.','error');render();return;}
     const r=activeRun();
-    if(r&&!state.outbox.length)await state.cloud.send({'status/current/heartbeatAt':Date.now()});
+    if(r&&!state.outbox.length)await state.cloud.send({'status/current/heartbeatAt':Date.now()},Number(state.data.meta?.generation||0));
   }catch(e){state.error=`계측 제어권 갱신 실패: ${formatError(e)}`;renderHeader();}
 },10000);
 
 async function claim(){
   if(state.mode==='local'){state.control=true;render();return;}
-  if(!isAdmin()||!state.connected||!state.cloud)return notice('로그인 및 온라인 연결이 필요합니다.','error');
+  if(!isAdmin()||!state.connected||!state.cloudLoaded||!state.cloud)return notice('서버 데이터 동기화를 기다려주세요.','error');
   state.lockPending=true;render();
   try{state.control=await state.cloud.claim(state.deviceId);notice(state.control?'계측 제어권을 획득했습니다.':'다른 기기에서 이미 계측 중입니다.',state.control?'good':'error');}
   catch(e){notice(formatError(e),'error');}finally{state.lockPending=false;render();}
@@ -473,7 +529,9 @@ app.addEventListener('click',async e=>{
         state.selectedId=el.dataset.id;state.tab='timer';render();break;
       case 'dnf':await absentRace('dnf');break;
       case 'dsq':await absentRace('dsq');break;
-      case 'logout':await state.cloud.logout();break;
+      case 'export-json':exportJson();state.backupAcknowledged=true;render();notice('JSON 백업을 요청했습니다. 실제 파일 저장 여부를 확인하세요.');break;
+      case 'open-reset':state.backupAcknowledged=false;state.modal='reset';render();break;
+      case 'discard-stale':await discardStaleOutbox();break;
       case 'retry':await flush();notice('전송 대기열을 확인했습니다.');break;
       case 'edit-run':if(state.data.runs[el.dataset.id]?.status==='running')throw Error('진행 중 기록은 계측 화면에서 종료 처리하세요.');state.editId=el.dataset.id;state.modal='edit-run';render();break;
       case 'close-modal':state.modal='';render();break;
@@ -489,10 +547,8 @@ app.addEventListener('click',async e=>{
 app.addEventListener('submit',async e=>{
   e.preventDefault();const form=e.target;
   try{
-    if(form.getAttribute('id')==='login-form'){
-      if(!state.cloud)throw Error('Firebase가 아직 준비되지 않았습니다.');
-      const d=new FormData(form);await state.cloud.login(String(d.get('email')).trim(),String(d.get('password')));notice('로그인 확인 중입니다.');
-    }else if(form.getAttribute('id')==='edit-run-form')await editRun(form);
+    if(form.getAttribute('id')==='edit-run-form')await editRun(form);
+    else if(form.getAttribute('id')==='reset-form')await resetRecords(form);
   }catch(error){notice(formatError(error),'error');}
 });
 app.addEventListener('change',async e=>{

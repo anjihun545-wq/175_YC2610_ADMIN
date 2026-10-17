@@ -46,3 +46,9 @@ export async function clearAll() {
   const db=await openDatabase(); const tx=db.transaction(['kv','outbox'],'readwrite');
   tx.objectStore('kv').clear(); tx.objectStore('outbox').clear(); await done(tx);
 }
+
+// 다른 장치가 초기화한 뒤 구세대 미전송 자료를 폐기할 때만 사용합니다.
+export async function clearOutbox(){
+ const db=await openDatabase(); const tx=db.transaction('outbox','readwrite');
+ tx.objectStore('outbox').clear();await done(tx);
+}

@@ -2,17 +2,10 @@
   "rules": {
     ".read": false,
     ".write": false,
-    "roles": {
-      "$uid": {
-        ".read": "auth != null && (auth.uid === $uid || root.child('roles').child(auth.uid).val() === 'admin')",
-        ".write": "auth != null && root.child('roles').child(auth.uid).val() === 'admin'",
-        ".validate": "newData.val() === 'admin' || newData.val() === 'viewer'"
-      }
-    },
     "events": {
       "$eventId": {
-        ".read": "auth != null && (root.child('roles').child(auth.uid).val() === 'admin' || root.child('roles').child(auth.uid).val() === 'viewer')",
-        ".write": "auth != null && root.child('roles').child(auth.uid).val() === 'admin'"
+        ".read": "auth != null && auth.provider === 'anonymous' && $eventId === 'yeoncheon-physical-2026'",
+        ".write": "auth != null && auth.provider === 'anonymous' && $eventId === 'yeoncheon-physical-2026'"
       }
     }
   }
