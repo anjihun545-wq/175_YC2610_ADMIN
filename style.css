@@ -31,3 +31,15 @@
 .mc-grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:900px){.mc-grid.two{grid-template-columns:1fr}}
 @media(max-width:600px){.slot-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}.slot-tile{min-height:66px;padding:10px 3px}.slot-tile b{font-size:24px}.slot-tile span{font-size:10px}.slot-navigation{width:100%}.slot-navigation select{flex:1;min-width:0}.count-progress{gap:8px}.jump-row .field{width:110px}.jump-row .btn{flex:1}}
+/* v1.5 two-at-once individual timing and standalone relay stopwatch */
+.full-action{display:block;width:100%;margin:14px 0 18px;min-height:82px}
+.lane-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}
+.lane-card{border:1px solid #3b5068;background:#122335;border-radius:14px;padding:16px;min-width:0}
+.lane-card.lane-live{border-color:var(--gold);background:#1b2a39}
+.lane-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.lane-head b{font-weight:900;font-size:19px}
+.lane-time{font:800 clamp(36px,4vw,64px)/1.35 'Barlow Condensed',sans-serif;font-variant-numeric:tabular-nums;text-align:center;margin:13px 0;color:var(--gold)}
+.lane-card .action-btn{width:100%;min-height:80px}
+.lane-sub{display:flex;justify-content:center;gap:9px;margin-top:10px}
+.relay-panel{max-width:950px;margin:auto}.relay-controls{display:grid;grid-template-columns:1fr 1fr auto;gap:12px}.relay-controls .reset-relay{min-width:115px}
+@media(max-width:650px){.lane-grid{grid-template-columns:1fr}.lane-card .action-btn{min-height:86px}.relay-controls{grid-template-columns:1fr 1fr}.relay-controls .reset-relay{grid-column:span 2;min-height:55px}}

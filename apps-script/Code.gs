@@ -1,5 +1,5 @@
 /**
- * 2026 연천피지컬 서바이벌 v1.4 — Apps Script server
+ * 2026 연천피지컬 서바이벌 v1.5 — Apps Script server
  *
  * 설치: 새 Google 스프레드시트 > 확장 프로그램 > Apps Script > 이 코드 붙여넣기.
  * 실행: setup() 1회 실행해 권한 승인 > 배포(웹 앱, 나로 실행, 액세스 권한 모든 사용자).
@@ -18,6 +18,7 @@ function setup(){
     var ss=ycSpreadsheet_();
     ycEnsure_(ss);
     var state=ycLoad_(ss);
+    ycRebuildResults_(ss,state);
     Logger.log('Ready. spreadsheet=' + ss.getUrl() + ', generation=' + ycGen_(state));
     return 'READY: '+ss.getUrl();
   }finally{lk.releaseLock();}
@@ -26,7 +27,7 @@ function doGet(e){
   var p=(e&&e.parameter)||{};
   try{
     var action=String(p.action||'state');
-    if(action==='ping')return ycText_({ok:true,service:'YC2026 Apps Script v1.4',time:Date.now()});
+    if(action==='ping')return ycText_({ok:true,service:'YC2026 Apps Script v1.5',time:Date.now()});
     if(action!=='state'||p.event!==YC_EVENT)throw Error('잘못된 조회 요청입니다.');
     var lk=LockService.getScriptLock();lk.waitLock(12000);
     var state;
@@ -220,13 +221,13 @@ function ycJsonp_(callback,obj){
   return ContentService.createTextOutput(callback+'('+JSON.stringify(obj)+');').setMimeType(ContentService.MimeType.JAVASCRIPT);
 }
 
-/** 읽기 쉬운 시트: 'YC_RESULTS' (개인전 200명 + 단체전 50팀) */
+/** 읽기 쉬운 시트: 'YC_RESULTS' (개인전 200명 + 과거 단체전 50팀 호환 보관) */
 function ycRebuildResults_(ss,state){
   var sh=ss.getSheetByName('YC_RESULTS');
-  var rows=[['종목','번호','기록(초)','상태','확정','시작시각','종료시각']];
+  var rows=[['종목','번호','부문','기록(초)','상태','확정','시작시각','종료시각']];
   for(var i=1;i<=200;i++)rows.push(ycResultRow_(state,'individual','p_'+('00'+i).slice(-3)));
   for(var j=1;j<=50;j++)rows.push(ycResultRow_(state,'relay','t_'+('0'+j).slice(-2)));
-  sh.getRange(1,1,rows.length,7).setValues(rows);
+  sh.getRange(1,1,rows.length,8).setValues(rows);
   sh.setFrozenRows(1);
 }
 function ycResultRow_(state,type,targetId){
@@ -237,17 +238,26 @@ function ycResultRow_(state,type,targetId){
   var label=type==='individual'?'개인전':'단체전';
   var number=targetId.slice(2);
   var name=(!r?'대기':{running:'진행 중',finished:'완료',dnf:'미완주',dsq:'실격',cancelled:'취소'}[r.status]||r.status);
-  return [label,number,(r&&r.elapsedMs!=null)?Number(r.elapsedMs)/1000:'',name,r&&r.verified?'확정':'',
+  var division=type==='individual'?(Number(number)<=150?'남자':'여자'):'—';
+  return [label,number,division,(r&&r.elapsedMs!=null)?Number(r.elapsedMs)/1000:'',name,r&&r.verified?'확정':'',
     r&&r.startedAt?new Date(r.startedAt):'',r&&r.endedAt?new Date(r.endedAt):''];
 }
 function ycUpdateResults_(ss,state,command,req){
   if(command==='reset'){ycRebuildResults_(ss,state);return;}
   if(command!=='mutation')return;
-  var key=Object.keys(req.patches||{}).filter(function(path){return /^runs\/run_[A-Za-z0-9_-]+$/.test(path);})[0];
-  if(!key)return;
-  var r=req.patches[key];if(!r||!['individual','relay'].includes(r.type))return;
-  var number=Number(String(r.targetId).slice(2));
-  if(!(number>=1&&number<=(r.type==='individual'?200:50)))return;
-  var row=r.type==='individual'?number+1:number+201;
-  ss.getSheetByName('YC_RESULTS').getRange(row,1,1,7).setValues([ycResultRow_(state,r.type,r.targetId)]);
+  // 동시 출발하는 두 주자의 각 기록행을 모두 갱신합니다.
+  var ids={};
+  Object.keys(req.patches||{}).forEach(function(path){
+    if(!/^runs\/run_[A-Za-z0-9_-]+$/.test(path))return;
+    var r=req.patches[path];
+    if(!r||!['individual','relay'].includes(r.type))return;
+    var n=Number(String(r.targetId||'').slice(2));
+    if(!(n>=1&&n<=(r.type==='individual'?200:50)))return;
+    var row=r.type==='individual'?n+1:n+201;
+    ids[row]=[r.type,r.targetId];
+  });
+  Object.keys(ids).forEach(function(row){
+    var args=ids[row];
+    ss.getSheetByName('YC_RESULTS').getRange(Number(row),1,1,8).setValues([ycResultRow_(state,args[0],args[1])]);
+  });
 }

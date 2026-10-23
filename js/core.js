@@ -67,7 +67,7 @@ export function presetData(data){
   const result={...emptyData(),...data};
   result.participants=Object.fromEntries(Array.from({length:INDIVIDUAL_COUNT},(_,i)=>{
     const bib=padBib(i+1,'individual'),id=`p_${bib}`;
-    return [id,{id,bib,name:`${bib}번 참가자`,division:'전체',affiliation:''}];
+    return [id,{id,bib,name:`${bib}번 참가자`,division:i<150?'male':'female',affiliation:''}];
   }));
   result.teams=Object.fromEntries(Array.from({length:TEAM_COUNT},(_,i)=>{
     const bib=padBib(i+1,'relay'),id=`t_${bib}`;
